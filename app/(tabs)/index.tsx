@@ -1,4 +1,6 @@
 import Slider from '@react-native-community/slider';
+import { addDays, addWeeks, format, isSameDay, startOfWeek } from 'date-fns';
+import { es } from 'date-fns/locale';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -26,11 +28,20 @@ import type { Evento, Todo } from '@/lib/supabase';
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function getTodayString(): string {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return format(new Date(), 'yyyy-MM-dd');
+}
+
+function getFriendlyDateString(dateString: string): string {
+  const date = new Date(dateString + 'T00:00:00');
+  if (isSameDay(date, new Date())) {
+    return `Hoy, ${format(date, 'd MMM', { locale: es })}`;
+  }
+  return format(date, 'EEEE d MMM', { locale: es }); // e.g. "lunes 14 feb"
+}
+
+function getWeekDays(startDate: Date) {
+  const start = startOfWeek(startDate, { weekStartsOn: 1 }); // Monday
+  return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
 }
 
 function isValidTime(value: string): boolean {
@@ -89,7 +100,12 @@ export default function CalendarScreen() {
   const { wellness, loading: wellnessLoading, fetchWellness, upsertField } = useWellness();
 
   const [selectedDate, setSelectedDate] = useState(getTodayString);
+  const [currentWeekStart, setCurrentWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [isScrollEnabled, setScrollEnabled] = useState(true);
+
+  // ── Calendar modal ──────────────────────────────────────────────────────
+  const [calendarModalVisible, setCalendarModalVisible] = useState(false);
+  const [modalSelectedDate, setModalSelectedDate] = useState(getTodayString); // To track selection inside modal before confirming
 
   // ── Evento modal ────────────────────────────────────────────────────────
   const [modalVisible, setModalVisible] = useState(false);
@@ -148,7 +164,34 @@ export default function CalendarScreen() {
 
   // ── Event handlers ──────────────────────────────────────────────────────
 
+  // ── Event handlers ──────────────────────────────────────────────────────
+
   const handleDayPress = (day: DateData) => setSelectedDate(day.dateString);
+
+
+  const handleCalendarDayPress = (day: DateData) => {
+    setModalSelectedDate(day.dateString);
+  };
+
+  const confirmCalendarSelection = () => {
+    setSelectedDate(modalSelectedDate);
+    setCurrentWeekStart(startOfWeek(new Date(modalSelectedDate + 'T00:00:00'), { weekStartsOn: 1 }));
+    setCalendarModalVisible(false);
+    // Open create event modal for the selected date
+    setTimeout(() => {
+      handleAddNew();
+    }, 300);
+  };
+
+  const handleWeekDayPress = (date: Date) => {
+    const dateStr = format(date, 'yyyy-MM-dd');
+    setSelectedDate(dateStr);
+  };
+
+  const handlePrevWeek = () => setCurrentWeekStart((prev) => addWeeks(prev, -1));
+  const handleNextWeek = () => setCurrentWeekStart((prev) => addWeeks(prev, 1));
+
+  const weekDays = useMemo(() => getWeekDays(currentWeekStart), [currentWeekStart]);
 
   const resetEventModal = () => {
     setTitulo('');
@@ -159,7 +202,13 @@ export default function CalendarScreen() {
     setEditingEvent(null);
   };
 
-  const handleAddNew = () => { resetEventModal(); setModalVisible(true); };
+  const handleAddNew = () => {
+    // If coming from confirmCalendarSelection, we already updated selectedDate.
+    // If user clicks "+ New" in main screen, we use current selectedDate.
+    resetEventModal();
+    setModalVisible(true);
+  };
+
 
   const handleEdit = (evento: Evento) => {
     setEditingEvent(evento);
@@ -171,6 +220,12 @@ export default function CalendarScreen() {
     setModalVisible(true);
   };
 
+  const handleEditFromModal = (evento: Evento) => {
+    // Open the edit modal ON TOP of the calendar modal
+    // We do NOT close calendarModalVisible
+    handleEdit(evento);
+  };
+
   const handleDelete = (evento: Evento) => {
     if (Platform.OS === 'web') {
       if (window.confirm(`¿Eliminar "${evento.titulo}"?`)) deleteEvent(evento.id);
@@ -180,6 +235,12 @@ export default function CalendarScreen() {
         { text: 'Eliminar', style: 'destructive', onPress: () => deleteEvent(evento.id) },
       ]);
     }
+  };
+
+  const handleDeleteFromModal = (evento: Evento) => {
+    // Same logic as handleDelete, but we ensure the modal stays open.
+    // Since deleteEvent updates the 'events' state, the modal list should auto-update.
+    handleDelete(evento);
   };
 
   const handleSave = async () => {
@@ -284,14 +345,84 @@ export default function CalendarScreen() {
     [events, selectedDate]
   );
 
+
+  const modalDateEvents = useMemo(
+    () => events.filter((e) => e.fecha === modalSelectedDate),
+    [events, modalSelectedDate]
+  );
+
   // ── Render ──────────────────────────────────────────────────────────────
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Mi Calendario</Text>
-        <Text style={styles.headerSubtitle}>Toca un día para ver o agregar eventos</Text>
+      {/* Header Minimalista */}
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.headerDate}>{getFriendlyDateString(selectedDate)}</Text>
+          <Text style={styles.headerSubtitle}>Tu agenda diaria</Text>
+        </View>
+        <Pressable
+          style={styles.headerAddButton}
+          onPress={() => {
+            setModalSelectedDate(selectedDate); // Initialize modal with current selection
+            setCalendarModalVisible(true);
+          }}
+        >
+          <Text style={styles.headerAddButtonText}>+ Agendar</Text>
+        </Pressable>
+      </View>
+
+      {/* WeekStrip */}
+      <View style={styles.weekStripContainer}>
+        <Pressable onPress={handlePrevWeek} style={styles.weekNavButton} hitSlop={12}>
+          <Text style={styles.weekNavText}>{'<'}</Text>
+        </Pressable>
+        <View style={styles.weekDaysRow}>
+          {weekDays.map((date) => {
+            const dateStr = format(date, 'yyyy-MM-dd');
+            const isSelected = dateStr === selectedDate;
+            const isToday = isSameDay(date, new Date());
+            const hasEvent = markedDates[dateStr] !== undefined;
+
+            return (
+              <Pressable
+                key={dateStr}
+                style={[
+                  styles.weekDayItem,
+                  isSelected && styles.weekDayItemSelected,
+                  !isSelected && isToday && styles.weekDayItemToday,
+                ]}
+                onPress={() => handleWeekDayPress(date)}
+              >
+                <Text style={[
+                  styles.weekDayName,
+                  isSelected && styles.weekDayTextSelected,
+                  !isSelected && isToday && styles.weekDayTextToday,
+                ]}>
+                  {format(date, 'EEE', { locale: es })}
+                </Text>
+                <Text style={[
+                  styles.weekDayNumber,
+                  isSelected && styles.weekDayTextSelected,
+                  !isSelected && isToday && styles.weekDayTextToday,
+                ]}>
+                  {format(date, 'd')}
+                </Text>
+
+                {/* Event Dot Indicator */}
+                {hasEvent && (
+                  <View style={[
+                    styles.weekDayDot,
+                    isSelected ? { backgroundColor: '#FFFFFF' } : { backgroundColor: COLORS.primary }
+                  ]} />
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+        <Pressable onPress={handleNextWeek} style={styles.weekNavButton} hitSlop={12}>
+          <Text style={styles.weekNavText}>{'>'}</Text>
+        </Pressable>
       </View>
 
       {loading && (
@@ -308,133 +439,189 @@ export default function CalendarScreen() {
       )}
 
       <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false} scrollEnabled={isScrollEnabled}>
-        {/* Calendario */}
-        <View style={styles.calendarWrapper}>
-          <Calendar
-            markedDates={markedDates}
-            onDayPress={handleDayPress}
-            enableSwipeMonths
-            theme={{
-              backgroundColor: COLORS.surface,
-              calendarBackground: COLORS.surface,
-              textSectionTitleColor: COLORS.textSecondary,
-              selectedDayBackgroundColor: COLORS.primary,
-              selectedDayTextColor: '#FFFFFF',
-              todayTextColor: COLORS.primary,
-              dayTextColor: COLORS.text,
-              textDisabledColor: '#D1D5DB',
-              dotColor: COLORS.primary,
-              selectedDotColor: '#FFFFFF',
-              arrowColor: COLORS.primary,
-              monthTextColor: COLORS.text,
-              textDayFontFamily: Platform.select({ ios: 'System', android: 'sans-serif' }),
-              textMonthFontFamily: Platform.select({ ios: 'System', android: 'sans-serif-medium' }),
-              textDayHeaderFontFamily: Platform.select({ ios: 'System', android: 'sans-serif' }),
-              textDayFontSize: 15,
-              textMonthFontSize: 17,
-              textDayHeaderFontSize: 13,
-            }}
-            style={styles.calendar}
-          />
-        </View>
 
-        {selectedDate && (
-          <View style={styles.daySectionContainer}>
+        {/* Cuerpo del Dashboard */}
+        <View style={styles.daySectionContainer}>
 
-            {/* ── Eventos ── */}
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>📅 Eventos</Text>
-              <Pressable style={styles.addButton} onPress={handleAddNew}>
-                <Text style={styles.addButtonText}>+ Nuevo</Text>
-              </Pressable>
+          {/* ── Eventos ── */}
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>📅 Eventos</Text>
+          </View>
+
+          {dayEvents.length === 0 ? (
+            <Text style={styles.noItemsText}>Sin eventos para este día</Text>
+          ) : (
+            dayEvents.map((evento) => (
+              <View key={evento.id} style={styles.eventCard}>
+                <View style={styles.eventInfo}>
+                  <View style={styles.eventTitleRow}>
+                    <Text style={styles.eventTitle}>{evento.titulo}</Text>
+                    {!evento.es_todo_el_dia && evento.hora_inicio && evento.hora_fin && (
+                      <View style={styles.timeBadge}>
+                        <Text style={styles.timeBadgeText}>
+                          {evento.hora_inicio} – {evento.hora_fin}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  {evento.es_todo_el_dia && <Text style={styles.allDayLabel}>Todo el día</Text>}
+                  {evento.descripcion ? <Text style={styles.eventDesc}>{evento.descripcion}</Text> : null}
+                </View>
+                <View style={styles.eventActions}>
+                  <Pressable style={styles.actionButton} onPress={() => handleEdit(evento)} hitSlop={8}>
+                    <Text style={styles.editText}>✎</Text>
+                  </Pressable>
+                  <Pressable style={[styles.actionButton, styles.deleteButton]} onPress={() => handleDelete(evento)} hitSlop={8}>
+                    <Text style={styles.deleteText}>✕</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))
+          )}
+
+          {/* ── To Do ── */}
+          <View style={[styles.sectionHeader, { marginTop: 24 }]}>
+            <Text style={styles.sectionTitle}>☑ To Do</Text>
+            <Pressable style={[styles.addButton, { backgroundColor: COLORS.accent }]} onPress={handleAddTodo}>
+              <Text style={styles.addButtonText}>+ Tarea</Text>
+            </Pressable>
+          </View>
+
+          {todosLoading ? (
+            <ActivityIndicator size="small" color={COLORS.accent} style={{ marginTop: 8 }} />
+          ) : todos.length === 0 ? (
+            <Text style={styles.noItemsText}>Sin tareas pendientes</Text>
+          ) : (
+            todos.map((todo) => (
+              <View key={todo.id} style={styles.todoRow}>
+                <Pressable style={styles.todoCircle} onPress={() => toggleTodo(todo.id, todo.completado)} hitSlop={8}>
+                  <View style={styles.todoCircleInner} />
+                </Pressable>
+                <Text style={styles.todoTitle} numberOfLines={1} ellipsizeMode="tail">
+                  {todo.titulo}
+                </Text>
+                <Pressable style={styles.todoEditButton} onPress={() => handleEditTodo(todo)} hitSlop={8}>
+                  <Text style={styles.todoEditText}>✎</Text>
+                </Pressable>
+              </View>
+            ))
+          )}
+
+          {/* ── Wellness Dashboard ── */}
+          <View style={[styles.sectionHeader, { marginTop: 24 }]}>
+            <Text style={styles.sectionTitle}>💪 Wellness</Text>
+          </View>
+
+          {wellnessLoading ? (
+            <ActivityIndicator size="small" color={COLORS.water} style={{ marginTop: 8 }} />
+          ) : (
+            <View style={styles.wellnessRow}>
+              {WELLNESS_FIELDS.map((cfg) => (
+                <Pressable key={cfg.key} style={{ flex: 1 }} onPress={() => handleOpenWellness(cfg)}>
+                  <WellnessCard
+                    emoji={cfg.emoji}
+                    label={cfg.label}
+                    value={wellness?.[cfg.key] ?? 0}
+                    maxValue={cfg.maxGoal}
+                    unit={cfg.unit}
+                    color={cfg.color}
+                  />
+                </Pressable>
+              ))}
             </View>
+          )}
 
-            {dayEvents.length === 0 ? (
-              <Text style={styles.noItemsText}>Sin eventos para este día</Text>
-            ) : (
-              dayEvents.map((evento) => (
-                <View key={evento.id} style={styles.eventCard}>
-                  <View style={styles.eventInfo}>
-                    <View style={styles.eventTitleRow}>
-                      <Text style={styles.eventTitle}>{evento.titulo}</Text>
-                      {!evento.es_todo_el_dia && evento.hora_inicio && evento.hora_fin && (
-                        <View style={styles.timeBadge}>
-                          <Text style={styles.timeBadgeText}>
-                            {evento.hora_inicio} – {evento.hora_fin}
+        </View>
+      </ScrollView>
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* Modal: CALENDARIO SELECCIÓN */}
+      <Modal visible={calendarModalVisible} transparent animationType="fade" onRequestClose={() => setCalendarModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContentCentered}>
+            <View style={[styles.modalContent, { maxHeight: '85%' }]}>
+              <Text style={styles.modalTitle}>Selecciona fecha</Text>
+              <View style={{ height: 16 }} />
+              <Calendar
+                markedDates={{
+                  ...markedDates,
+                  [modalSelectedDate]: {
+                    ...markedDates[modalSelectedDate],
+                    selected: true,
+                    selectedColor: COLORS.primary,
+                    selectedTextColor: '#FFFFFF',
+                  },
+                }}
+                onDayPress={handleCalendarDayPress}
+                enableSwipeMonths
+                theme={{
+                  backgroundColor: COLORS.surface,
+                  calendarBackground: COLORS.surface,
+                  textSectionTitleColor: COLORS.textSecondary,
+                  selectedDayBackgroundColor: COLORS.primary,
+                  selectedDayTextColor: '#FFFFFF',
+                  todayTextColor: COLORS.primary,
+                  dayTextColor: COLORS.text,
+                  textDisabledColor: '#D1D5DB',
+                  dotColor: COLORS.primary,
+                  selectedDotColor: '#FFFFFF',
+                  arrowColor: COLORS.primary,
+                  monthTextColor: COLORS.text,
+                  textDayFontFamily: Platform.select({ ios: 'System', android: 'sans-serif' }),
+                  textMonthFontFamily: Platform.select({ ios: 'System', android: 'sans-serif-medium' }),
+                  textDayHeaderFontFamily: Platform.select({ ios: 'System', android: 'sans-serif' }),
+                  textDayFontSize: 15,
+                  textMonthFontSize: 17,
+                  textDayHeaderFontSize: 13,
+                }}
+                style={styles.calendar}
+              />
+
+              {/* Event Preview List */}
+              <View style={styles.modalPreviewContainer}>
+                <Text style={styles.modalPreviewTitle}>Eventos para el {format(new Date(modalSelectedDate + 'T00:00:00'), 'd MMM', { locale: es })}:</Text>
+                <ScrollView style={{ maxHeight: 100, marginBottom: 12 }}>
+                  {modalDateEvents.length === 0 ? (
+                    <Text style={styles.noItemsText}>Sin eventos agendados.</Text>
+                  ) : (
+                    modalDateEvents.map(evt => (
+                      <View key={evt.id} style={styles.miniEventRow}>
+                        <View style={styles.miniEventInfo}>
+                          <View style={[styles.miniEventDot, { backgroundColor: COLORS.primary }]} />
+                          <Text style={styles.miniEventTitle} numberOfLines={1}>{evt.titulo}</Text>
+                          <Text style={styles.miniEventTime}>
+                            {evt.es_todo_el_dia ? 'Todo el día' : evt.hora_inicio}
                           </Text>
                         </View>
-                      )}
-                    </View>
-                    {evento.es_todo_el_dia && <Text style={styles.allDayLabel}>Todo el día</Text>}
-                    {evento.descripcion ? <Text style={styles.eventDesc}>{evento.descripcion}</Text> : null}
-                  </View>
-                  <View style={styles.eventActions}>
-                    <Pressable style={styles.actionButton} onPress={() => handleEdit(evento)} hitSlop={8}>
-                      <Text style={styles.editText}>✎</Text>
-                    </Pressable>
-                    <Pressable style={[styles.actionButton, styles.deleteButton]} onPress={() => handleDelete(evento)} hitSlop={8}>
-                      <Text style={styles.deleteText}>✕</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ))
-            )}
-
-            {/* ── To Do ── */}
-            <View style={[styles.sectionHeader, { marginTop: 24 }]}>
-              <Text style={styles.sectionTitle}>☑ To Do</Text>
-              <Pressable style={[styles.addButton, { backgroundColor: COLORS.accent }]} onPress={handleAddTodo}>
-                <Text style={styles.addButtonText}>+ Tarea</Text>
-              </Pressable>
-            </View>
-
-            {todosLoading ? (
-              <ActivityIndicator size="small" color={COLORS.accent} style={{ marginTop: 8 }} />
-            ) : todos.length === 0 ? (
-              <Text style={styles.noItemsText}>Sin tareas pendientes</Text>
-            ) : (
-              todos.map((todo) => (
-                <View key={todo.id} style={styles.todoRow}>
-                  <Pressable style={styles.todoCircle} onPress={() => toggleTodo(todo.id, todo.completado)} hitSlop={8}>
-                    <View style={styles.todoCircleInner} />
-                  </Pressable>
-                  <Text style={styles.todoTitle} numberOfLines={1} ellipsizeMode="tail">
-                    {todo.titulo}
-                  </Text>
-                  <Pressable style={styles.todoEditButton} onPress={() => handleEditTodo(todo)} hitSlop={8}>
-                    <Text style={styles.todoEditText}>✎</Text>
-                  </Pressable>
-                </View>
-              ))
-            )}
-
-            {/* ── Wellness Dashboard ── */}
-            <View style={[styles.sectionHeader, { marginTop: 24 }]}>
-              <Text style={styles.sectionTitle}>💪 Wellness</Text>
-            </View>
-
-            {wellnessLoading ? (
-              <ActivityIndicator size="small" color={COLORS.water} style={{ marginTop: 8 }} />
-            ) : (
-              <View style={styles.wellnessRow}>
-                {WELLNESS_FIELDS.map((cfg) => (
-                  <Pressable key={cfg.key} style={{ flex: 1 }} onPress={() => handleOpenWellness(cfg)}>
-                    <WellnessCard
-                      emoji={cfg.emoji}
-                      label={cfg.label}
-                      value={wellness?.[cfg.key] ?? 0}
-                      maxValue={cfg.maxGoal}
-                      unit={cfg.unit}
-                      color={cfg.color}
-                    />
-                  </Pressable>
-                ))}
+                        <View style={styles.miniEventActions}>
+                          <Pressable style={styles.miniActionButton} onPress={() => handleEditFromModal(evt)} hitSlop={8}>
+                            <Text style={styles.miniActionText}>✎</Text>
+                          </Pressable>
+                          <Pressable style={[styles.miniActionButton, styles.miniDeleteButton]} onPress={() => handleDeleteFromModal(evt)} hitSlop={8}>
+                            <Text style={[styles.miniActionText, { color: COLORS.error }]}>✕</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ))
+                  )}
+                </ScrollView>
               </View>
-            )}
 
+              <View style={styles.modalButtons}>
+                <Pressable style={[styles.button, styles.buttonCancel]} onPress={() => setCalendarModalVisible(false)}>
+                  <Text style={styles.buttonCancelText}>Cancelar</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.button, styles.buttonSave]}
+                  onPress={confirmCalendarSelection}
+                >
+                  <Text style={styles.buttonSaveText}>Confirmar</Text>
+                </Pressable>
+              </View>
+            </View>
           </View>
-        )}
-      </ScrollView>
+        </View>
+      </Modal>
 
       {/* ══════════════════════════════════════════════════════════════════ */}
       {/* Modal: EVENTO */}
@@ -571,23 +758,96 @@ export default function CalendarScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
 
-  header: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12 },
-  headerTitle: { fontSize: 28, fontWeight: '700', color: COLORS.text },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  headerDate: { fontSize: 28, fontWeight: '700', color: COLORS.text },
   headerSubtitle: { fontSize: 14, color: COLORS.textSecondary, marginTop: 4 },
+  headerAddButton: {
+    backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  headerAddButtonText: {
+    color: COLORS.primary,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+
+  // WeekStrip Styles
+  weekStripContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  weekNavButton: {
+    padding: 10,
+  },
+  weekNavText: {
+    fontSize: 18,
+    color: COLORS.primary,
+    fontWeight: 'bold',
+  },
+  weekDaysRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    flex: 1,
+    paddingHorizontal: 4,
+  },
+  weekDayItem: {
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    minWidth: 40,
+  },
+  weekDayItemSelected: {
+    backgroundColor: COLORS.primary,
+  },
+  weekDayItemToday: {
+    backgroundColor: COLORS.primaryLight,
+  },
+  weekDayName: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginBottom: 4,
+    textTransform: 'capitalize',
+  },
+  weekDayNumber: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  weekDayTextSelected: {
+    color: '#FFFFFF',
+  },
+  weekDayTextToday: {
+    color: COLORS.primary,
+    fontWeight: 'bold',
+  },
+  weekDayDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    marginTop: 4,
+  },
 
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingVertical: 8 },
   statusText: { fontSize: 13, color: COLORS.textSecondary },
 
   scrollArea: { flex: 1 },
 
-  calendarWrapper: {
-    marginHorizontal: 16, borderRadius: 16, overflow: 'hidden',
-    backgroundColor: COLORS.surface,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
-  },
   calendar: { borderRadius: 16 },
 
-  daySectionContainer: { marginTop: 20, paddingHorizontal: 20, paddingBottom: 32 },
+  daySectionContainer: { marginTop: 10, paddingHorizontal: 20, paddingBottom: 32 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: COLORS.text },
   addButton: { backgroundColor: COLORS.primary, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8 },
@@ -659,4 +919,62 @@ const styles = StyleSheet.create({
   slider: { width: '100%', height: 40, marginBottom: 4 },
   sliderRange: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   sliderRangeText: { fontSize: 12, color: COLORS.textSecondary },
+
+  // Modal Preview Styles
+  modalPreviewContainer: {
+    marginTop: 16,
+    marginBottom: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 12,
+  },
+  modalPreviewTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  miniEventRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8, // Increased spacing
+    paddingVertical: 4,
+  },
+  miniEventInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 8,
+  },
+  miniEventDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 8,
+  },
+  miniEventTitle: {
+    fontSize: 14, // Slightly larger
+    color: COLORS.text,
+    flex: 1,
+    marginRight: 8,
+  },
+  miniEventTime: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    minWidth: 50,
+    textAlign: 'right',
+  },
+  miniEventActions: {
+    flexDirection: 'row',
+    gap: 12, // Space between buttons
+  },
+  miniActionButton: {
+    padding: 4,
+  },
+  miniDeleteButton: {},
+  miniActionText: {
+    fontSize: 16,
+    color: COLORS.primary,
+  }
 });
