@@ -1,50 +1,117 @@
-# Welcome to your Expo app 👋
+# 📅 Mi Calendario App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Aplicación móvil de productividad personal construida con Expo y Supabase. Combina un calendario interactivo, lista de tareas y dashboard de bienestar en una sola interfaz.
 
-## Get started
+## 🚀 Stack Tecnológico
 
-1. Install dependencies
+| Capa | Tecnología |
+|---|---|
+| **Framework** | [Expo](https://expo.dev) (React Native) + Expo Router |
+| **Backend** | [Supabase](https://supabase.com) (PostgreSQL) |
+| **Lenguaje** | TypeScript |
+| **Calendario** | `react-native-calendars` |
+| **Gráficos** | `react-native-svg` (ring charts) |
+| **Sliders** | `@react-native-community/slider` |
 
+## ✨ Funcionalidades
+
+### 📅 Calendario de Eventos
+- Vista mensual interactiva con puntos indicadores en días con eventos.
+- Selección automática del día actual al abrir la app.
+- CRUD completo: crear, editar y eliminar eventos.
+- Soporte para **horarios**: switch "Todo el día" o rango `HH:MM – HH:MM`.
+- Validación de formato y rango horario.
+- Eventos ordenados por hora en la lista diaria.
+
+### ☑ To-Do List
+- Lista de tareas pendientes por día (filtradas por `completado = false`).
+- Crear y editar tareas con modal dedicado.
+- Marcar como completada tocando el círculo verde (desaparece de la lista).
+- Título truncado a 1 línea con `ellipsizeMode="tail"`.
+
+### 💪 Wellness Dashboard
+- Tres tarjetas con **gráficos circulares de progreso** (SVG ring charts):
+  - 💧 **Agua** — Meta: 6 L, slider paso 0.5
+  - 👣 **Pasos** — Meta: 10,000, slider hasta 20,000
+  - 🛌 **Sueño** — Meta: 8 h, slider hasta 24 h
+- Toca una tarjeta para ajustar el valor con un **Slider**.
+- Bloqueo del scroll mientras se arrastra el slider (sin conflictos de gestos).
+- Upsert automático en Supabase (crea o actualiza el registro del día).
+
+## 📁 Estructura del Proyecto
+
+```
+├── app/
+│   └── (tabs)/
+│       └── index.tsx          # Pantalla principal (Calendario + Eventos + To-Do + Wellness)
+├── components/
+│   └── WellnessCard.tsx       # Tarjeta con ring chart SVG
+├── hooks/
+│   ├── useEvents.ts           # CRUD de eventos
+│   ├── useTodos.ts            # CRUD de tareas
+│   └── useWellness.ts         # Fetch/upsert de bienestar diario
+├── lib/
+│   └── supabase.ts            # Cliente Supabase + tipos (Evento, Todo, DailyWellness)
+└── .env                       # EXPO_PUBLIC_SUPABASE_URL, EXPO_PUBLIC_SUPABASE_ANON_KEY
+```
+
+## 🗄️ Base de Datos (Supabase)
+
+### Tabla `eventos`
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | uuid (PK) | Auto-generado |
+| `titulo` | text | Requerido |
+| `descripcion` | text | Opcional |
+| `fecha` | date | YYYY-MM-DD |
+| `user_id` | uuid | Nullable |
+| `es_todo_el_dia` | boolean | Default `true` |
+| `hora_inicio` | time | HH:MM, nullable |
+| `hora_fin` | time | HH:MM, nullable |
+
+### Tabla `todos`
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | uuid (PK) | Auto-generado |
+| `titulo` | text | Requerido |
+| `fecha` | date | YYYY-MM-DD |
+| `user_id` | uuid | Nullable |
+| `completado` | boolean | Default `false` |
+
+### Tabla `daily_wellness`
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | uuid (PK) | Auto-generado |
+| `fecha` | date | YYYY-MM-DD |
+| `user_id` | uuid | Nullable |
+| `agua_litros` | float | 0 – 6 |
+| `pasos` | int | 0 – 20,000 |
+| `horas_sueno` | float | 0 – 24 |
+
+## 🛠️ Configuración
+
+1. **Instala las dependencias:**
    ```bash
    npm install
    ```
 
-2. Start the app
+2. **Configura las variables de entorno** — crea `.env` en la raíz:
+   ```env
+   EXPO_PUBLIC_SUPABASE_URL=https://tu-proyecto.supabase.co
+   EXPO_PUBLIC_SUPABASE_ANON_KEY=tu-anon-key
+   ```
 
+3. **Crea las tablas** en Supabase (SQL Editor) con las columnas descritas arriba.
+
+4. **Inicia la app:**
    ```bash
    npx expo start
    ```
 
-In the output, you'll find options to open the app in a
+## 🎨 Diseño
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
-```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- Tema minimalista con colores claros (`#F8F9FA` fondo, `#FFFFFF` superficie).
+- Acento azul `#4A90D9` para eventos, verde `#10B981` para tareas.
+- Wellness: azul 💧, amarillo 👣, morado 🛌.
+- Tarjetas con bordes redondeados, sombras suaves y bordes laterales de color.
+- Modales con `KeyboardAvoidingView` y validaciones inline.
