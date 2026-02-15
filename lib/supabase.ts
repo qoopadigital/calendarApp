@@ -2,6 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 
 // ── Tipos de la base de datos ──────────────────────────────────────────────
 
+export type Recurrence = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly';
+
 export interface Evento {
   id: string;
   titulo: string;
@@ -11,6 +13,9 @@ export interface Evento {
   es_todo_el_dia: boolean;  // true = evento sin hora específica
   hora_inicio: string | null; // formato HH:MM
   hora_fin: string | null;    // formato HH:MM
+  video_url: string | null;
+  recurrence: Recurrence;
+  exception_dates: string[] | null;
 }
 
 export interface Todo {

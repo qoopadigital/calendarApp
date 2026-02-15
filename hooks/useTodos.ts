@@ -3,9 +3,11 @@ import { useCallback, useState } from 'react';
 
 interface UseTodosReturn {
     todos: Todo[];
+    allTodos: Todo[];
     loading: boolean;
     error: string | null;
     fetchTodos: (fecha: string) => Promise<void>;
+    fetchAllTodos: (fecha: string) => Promise<void>;
     addTodo: (titulo: string, fecha: string) => Promise<void>;
     toggleTodo: (id: string, completadoActual: boolean) => Promise<void>;
     updateTodo: (id: string, nuevoTitulo: string) => Promise<void>;
@@ -13,10 +15,11 @@ interface UseTodosReturn {
 
 export function useTodos(): UseTodosReturn {
     const [todos, setTodos] = useState<Todo[]>([]);
+    const [allTodos, setAllTodos] = useState<Todo[]>([]);
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
-    // ── Obtener tareas pendientes de una fecha ────────────────────────────
+    // ── Obtener tareas PENDIENTES de una fecha ─────────────────────────────
 
     const fetchTodos = useCallback(async (fecha: string) => {
         setLoading(true);
@@ -41,6 +44,28 @@ export function useTodos(): UseTodosReturn {
         }
     }, []);
 
+    // ── Obtener TODAS las tareas de una fecha (pendientes + completadas) ──
+
+    const fetchAllTodos = useCallback(async (fecha: string) => {
+        setError(null);
+
+        try {
+            const { data, error: fetchError } = await supabase
+                .from('todos')
+                .select('*')
+                .eq('fecha', fecha)
+                .order('completado', { ascending: true })
+                .order('titulo', { ascending: true });
+
+            if (fetchError) throw fetchError;
+
+            setAllTodos((data as Todo[]) ?? []);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Error al cargar tareas';
+            setError(message);
+        }
+    }, []);
+
     // ── Agregar tarea ─────────────────────────────────────────────────────
 
     const addTodo = useCallback(
@@ -57,12 +82,13 @@ export function useTodos(): UseTodosReturn {
                 if (insertError) throw insertError;
 
                 await fetchTodos(fecha);
+                await fetchAllTodos(fecha);
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Error al guardar tarea';
                 setError(message);
             }
         },
-        [fetchTodos]
+        [fetchTodos, fetchAllTodos]
     );
 
     // ── Marcar / desmarcar como completada ─────────────────────────────────
@@ -79,8 +105,20 @@ export function useTodos(): UseTodosReturn {
 
                 if (toggleError) throw toggleError;
 
-                // Quitar de la lista local inmediatamente (solo mostramos pendientes)
-                setTodos((prev) => prev.filter((t) => t.id !== id));
+                // Update pending list
+                if (!completadoActual) {
+                    // Was pending → now completed: remove from pending list
+                    setTodos((prev) => prev.filter((t) => t.id !== id));
+                } else {
+                    // Was completed → now pending: will be re-fetched
+                }
+
+                // Update allTodos list locally
+                setAllTodos((prev) =>
+                    prev.map((t) =>
+                        t.id === id ? { ...t, completado: !completadoActual } : t
+                    )
+                );
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Error al actualizar tarea';
                 setError(message);
@@ -103,8 +141,11 @@ export function useTodos(): UseTodosReturn {
 
                 if (updateError) throw updateError;
 
-                // Actualizar localmente
+                // Actualizar localmenteq
                 setTodos((prev) =>
+                    prev.map((t) => (t.id === id ? { ...t, titulo: nuevoTitulo } : t))
+                );
+                setAllTodos((prev) =>
                     prev.map((t) => (t.id === id ? { ...t, titulo: nuevoTitulo } : t))
                 );
             } catch (err) {
@@ -115,5 +156,5 @@ export function useTodos(): UseTodosReturn {
         []
     );
 
-    return { todos, loading, error, fetchTodos, addTodo, toggleTodo, updateTodo };
+    return { todos, allTodos, loading, error, fetchTodos, fetchAllTodos, addTodo, toggleTodo, updateTodo };
 }

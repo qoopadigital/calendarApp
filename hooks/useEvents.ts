@@ -1,5 +1,5 @@
-import { supabase, type Evento } from '@/lib/supabase';
-import { useCallback, useEffect, useState } from 'react';
+import { supabase, type Evento, type Recurrence } from '@/lib/supabase';
+import { useCallback, useState } from 'react';
 
 interface AddEventParams {
     titulo: string;
@@ -8,6 +8,8 @@ interface AddEventParams {
     es_todo_el_dia: boolean;
     hora_inicio: string | null;
     hora_fin: string | null;
+    video_url: string | null;
+    recurrence: Recurrence;
 }
 
 interface UseEventsReturn {
@@ -18,6 +20,7 @@ interface UseEventsReturn {
     addEvent: (params: AddEventParams) => Promise<void>;
     updateEvent: (evento: Evento) => Promise<void>;
     deleteEvent: (id: string) => Promise<void>;
+    addExceptionDate: (eventId: string, date: string) => Promise<void>;
 }
 
 export function useEvents(): UseEventsReturn {
@@ -62,6 +65,8 @@ export function useEvents(): UseEventsReturn {
                     es_todo_el_dia: params.es_todo_el_dia,
                     hora_inicio: params.hora_inicio,
                     hora_fin: params.hora_fin,
+                    video_url: params.video_url,
+                    recurrence: params.recurrence,
                 });
 
                 if (insertError) throw insertError;
@@ -91,6 +96,8 @@ export function useEvents(): UseEventsReturn {
                         es_todo_el_dia: evento.es_todo_el_dia,
                         hora_inicio: evento.hora_inicio,
                         hora_fin: evento.hora_fin,
+                        video_url: evento.video_url,
+                        recurrence: evento.recurrence,
                     })
                     .eq('id', evento.id);
 
@@ -128,11 +135,40 @@ export function useEvents(): UseEventsReturn {
         [fetchEvents]
     );
 
-    // ── Cargar eventos al montar ───────────────────────────────────────────
+    // ── Añadir excepción a evento recurrente ───────────────────────────────
 
-    useEffect(() => {
-        fetchEvents();
-    }, [fetchEvents]);
+    const addExceptionDate = useCallback(
+        async (eventId: string, date: string) => {
+            setError(null);
 
-    return { events, loading, error, fetchEvents, addEvent, updateEvent, deleteEvent };
+            try {
+                // Get current exception_dates
+                const { data: current, error: fetchErr } = await supabase
+                    .from('eventos')
+                    .select('exception_dates')
+                    .eq('id', eventId)
+                    .single();
+
+                if (fetchErr) throw fetchErr;
+
+                const existing: string[] = (current as { exception_dates: string[] | null })?.exception_dates ?? [];
+                const updated = [...existing, date];
+
+                const { error: updateErr } = await supabase
+                    .from('eventos')
+                    .update({ exception_dates: updated })
+                    .eq('id', eventId);
+
+                if (updateErr) throw updateErr;
+
+                await fetchEvents();
+            } catch (err) {
+                const message = err instanceof Error ? err.message : 'Error al añadir excepción';
+                setError(message);
+            }
+        },
+        [fetchEvents]
+    );
+
+    return { events, loading, error, fetchEvents, addEvent, updateEvent, deleteEvent, addExceptionDate };
 }

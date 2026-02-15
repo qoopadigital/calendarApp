@@ -1,11 +1,14 @@
+import RNDateTimePicker from '@react-native-community/datetimepicker';
 import Slider from '@react-native-community/slider';
-import { addDays, addWeeks, format, isSameDay, startOfWeek } from 'date-fns';
+import { addDays, addHours, addWeeks, format, isSameDay, startOfWeek } from 'date-fns';
 import { es } from 'date-fns/locale';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -23,7 +26,17 @@ import WellnessCard from '@/components/WellnessCard';
 import { useEvents } from '@/hooks/useEvents';
 import { useTodos } from '@/hooks/useTodos';
 import { useWellness } from '@/hooks/useWellness';
-import type { Evento, Todo } from '@/lib/supabase';
+import type { Evento, Recurrence, Todo } from '@/lib/supabase';
+import { shouldShowOnDate } from '@/utils/recurrence';
+
+const RECURRENCE_OPTIONS: { value: Recurrence; label: string }[] = [
+  { value: 'none', label: 'Nunca' },
+  { value: 'daily', label: 'Diario' },
+  { value: 'weekly', label: 'Semanal' },
+  { value: 'biweekly', label: 'Bisemanal' },
+  { value: 'monthly', label: 'Mensual' },
+  { value: 'yearly', label: 'Anual' },
+];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -44,8 +57,11 @@ function getWeekDays(startDate: Date) {
   return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
 }
 
-function isValidTime(value: string): boolean {
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+/** Build a Date for the given YYYY-MM-DD string at a specific hour */
+function buildDateAtHour(dateStr: string, hour: number): Date {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setHours(hour, 0, 0, 0);
+  return d;
 }
 
 // ── Colores del tema ────────────────────────────────────────────────────────
@@ -95,9 +111,12 @@ const WELLNESS_FIELDS: WellnessConfig[] = [
 
 export default function CalendarScreen() {
   const insets = useSafeAreaInsets();
-  const { events, loading, error, addEvent, updateEvent, deleteEvent } = useEvents();
+  const { events, loading, error, fetchEvents, addEvent, updateEvent, deleteEvent, addExceptionDate } = useEvents();
   const { todos, loading: todosLoading, fetchTodos, addTodo, toggleTodo, updateTodo } = useTodos();
-  const { wellness, loading: wellnessLoading, fetchWellness, upsertField } = useWellness();
+  const { wellness, loading: wellnessLoading, error: wellnessError, fetchWellness, upsertField } = useWellness();
+
+  // Log wellness errors for debugging
+  if (wellnessError) console.error('[Wellness]', wellnessError);
 
   const [selectedDate, setSelectedDate] = useState(getTodayString);
   const [currentWeekStart, setCurrentWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
@@ -114,8 +133,10 @@ export default function CalendarScreen() {
   const [saving, setSaving] = useState(false);
   const [editingEvent, setEditingEvent] = useState<Evento | null>(null);
   const [esTodoDia, setEsTodoDia] = useState(true);
-  const [horaInicio, setHoraInicio] = useState('');
-  const [horaFin, setHoraFin] = useState('');
+  const [fechaInicio, setFechaInicio] = useState<Date>(() => buildDateAtHour(getTodayString(), 9));
+  const [fechaFin, setFechaFin] = useState<Date>(() => buildDateAtHour(getTodayString(), 10));
+  const [videoUrl, setVideoUrl] = useState('');
+  const [recurrence, setRecurrence] = useState<Recurrence>('none');
 
   // ── Todo modal ──────────────────────────────────────────────────────────
   const [todoModalVisible, setTodoModalVisible] = useState(false);
@@ -129,25 +150,46 @@ export default function CalendarScreen() {
   const [sliderValue, setSliderValue] = useState(0);
   const [wellnessSaving, setWellnessSaving] = useState(false);
 
-  // ── Cargar datos cuando cambie el día ───────────────────────────────────
-  useEffect(() => {
-    if (selectedDate) {
-      fetchTodos(selectedDate);
-      fetchWellness(selectedDate);
-    }
-  }, [selectedDate, fetchTodos, fetchWellness]);
+  // ── Cargar datos cuando cambie el día O cuando la pantalla gane foco ────
+  useFocusEffect(
+    useCallback(() => {
+      fetchEvents();
+      if (selectedDate) {
+        fetchTodos(selectedDate);
+        fetchWellness(selectedDate);
+      }
+    }, [selectedDate, fetchEvents, fetchTodos, fetchWellness])
+  );
 
   // ── markedDates ─────────────────────────────────────────────────────────
 
-  const markedDates = useMemo(() => {
+  // Event-only marks (no selection – used by Calendar modal dots)
+  // Projects recurring events onto a ±45-day window from today
+  const eventMarks = useMemo(() => {
     const marks: Record<
       string,
       { marked: boolean; dotColor: string; selectedColor?: string; selected?: boolean }
     > = {};
 
-    events.forEach((evento: Evento) => {
-      marks[evento.fecha] = { marked: true, dotColor: COLORS.primary };
-    });
+    const today = new Date();
+    const rangeStart = addDays(today, -45);
+    const RANGE_DAYS = 90;
+
+    for (let i = 0; i < RANGE_DAYS; i++) {
+      const d = addDays(rangeStart, i);
+      const dateStr = format(d, 'yyyy-MM-dd');
+      const hasEvent = events.some((evt) => shouldShowOnDate(evt, dateStr));
+      if (hasEvent) {
+        marks[dateStr] = { marked: true, dotColor: COLORS.primary };
+      }
+    }
+
+    return marks;
+  }, [events]);
+
+  // Full markedDates (events + selected day highlight)
+  const markedDates = useMemo(() => {
+    const marks = { ...eventMarks };
 
     if (selectedDate) {
       marks[selectedDate] = {
@@ -160,7 +202,7 @@ export default function CalendarScreen() {
     }
 
     return marks;
-  }, [events, selectedDate]);
+  }, [eventMarks, selectedDate]);
 
   // ── Event handlers ──────────────────────────────────────────────────────
 
@@ -177,9 +219,12 @@ export default function CalendarScreen() {
     setSelectedDate(modalSelectedDate);
     setCurrentWeekStart(startOfWeek(new Date(modalSelectedDate + 'T00:00:00'), { weekStartsOn: 1 }));
     setCalendarModalVisible(false);
-    // Open create event modal for the selected date
+    // Open create event modal using modalSelectedDate directly (not stale selectedDate)
     setTimeout(() => {
-      handleAddNew();
+      resetEventModal();
+      setFechaInicio(buildDateAtHour(modalSelectedDate, 9));
+      setFechaFin(buildDateAtHour(modalSelectedDate, 10));
+      setModalVisible(true);
     }, 300);
   };
 
@@ -197,82 +242,176 @@ export default function CalendarScreen() {
     setTitulo('');
     setDescripcion('');
     setEsTodoDia(true);
-    setHoraInicio('');
-    setHoraFin('');
+    setFechaInicio(buildDateAtHour(selectedDate, 9));
+    setFechaFin(buildDateAtHour(selectedDate, 10));
+    setVideoUrl('');
+    setRecurrence('none');
     setEditingEvent(null);
   };
 
   const handleAddNew = () => {
-    // If coming from confirmCalendarSelection, we already updated selectedDate.
-    // If user clicks "+ New" in main screen, we use current selectedDate.
     resetEventModal();
+    setFechaInicio(buildDateAtHour(selectedDate, 9));
+    setFechaFin(buildDateAtHour(selectedDate, 10));
     setModalVisible(true);
+  };
+
+  // ── Date picker change handlers ──────────────────────────────────────
+
+  const handleStartDateChange = (_event: unknown, date?: Date) => {
+    if (!date) return;
+    setFechaInicio(date);
+    // Auto-adjust: if new start >= end, push end to start + 1h
+    if (date >= fechaFin) {
+      setFechaFin(addHours(date, 1));
+    }
+  };
+
+  const handleEndDateChange = (_event: unknown, date?: Date) => {
+    if (!date) return;
+    // Only accept if end > start
+    if (date <= fechaInicio) {
+      setFechaFin(addHours(fechaInicio, 1));
+    } else {
+      setFechaFin(date);
+    }
   };
 
 
   const handleEdit = (evento: Evento) => {
     setEditingEvent(evento);
-    setTitulo(evento.titulo);
-    setDescripcion(evento.descripcion);
-    setEsTodoDia(evento.es_todo_el_dia);
-    setHoraInicio(evento.hora_inicio ?? '');
-    setHoraFin(evento.hora_fin ?? '');
+    setTitulo(evento.titulo ?? '');
+    setDescripcion(evento.descripcion ?? '');
+    setEsTodoDia(evento.es_todo_el_dia ?? true);
+    setVideoUrl(evento.video_url ?? '');
+    setRecurrence(evento.recurrence ?? 'none');
+
+    // Build a safe fecha fallback
+    const safeFecha = evento.fecha || getTodayString();
+
+    // Parse existing time strings back into Date objects
+    if (evento.hora_inicio && evento.hora_fin) {
+      try {
+        const [startH, startM] = evento.hora_inicio.split(':').map(Number);
+        const [endH, endM] = evento.hora_fin.split(':').map(Number);
+        const startDate = new Date(safeFecha + 'T00:00:00');
+        startDate.setHours(startH, startM, 0, 0);
+        const endDate = new Date(safeFecha + 'T00:00:00');
+        endDate.setHours(endH, endM, 0, 0);
+        setFechaInicio(startDate);
+        setFechaFin(endDate);
+      } catch {
+        // Fallback if time parsing fails
+        setFechaInicio(buildDateAtHour(safeFecha, 9));
+        setFechaFin(buildDateAtHour(safeFecha, 10));
+      }
+    } else {
+      setFechaInicio(buildDateAtHour(safeFecha, 9));
+      setFechaFin(buildDateAtHour(safeFecha, 10));
+    }
+
     setModalVisible(true);
   };
 
   const handleEditFromModal = (evento: Evento) => {
-    // Open the edit modal ON TOP of the calendar modal
-    // We do NOT close calendarModalVisible
-    handleEdit(evento);
+    // Close the calendar modal FIRST, then open edit modal after a short delay
+    setCalendarModalVisible(false);
+    setTimeout(() => {
+      handleEdit(evento);
+    }, 350);
   };
 
-  const handleDelete = (evento: Evento) => {
-    if (Platform.OS === 'web') {
-      if (window.confirm(`¿Eliminar "${evento.titulo}"?`)) deleteEvent(evento.id);
-    } else {
-      Alert.alert('Eliminar evento', `¿Eliminar "${evento.titulo}"?`, [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: () => deleteEvent(evento.id) },
-      ]);
+  const handleJoinVideo = (url: string | null | undefined) => {
+    if (!url || !url.trim()) {
+      Alert.alert('Error', 'No hay enlace de videollamada.');
+      return;
+    }
+    let safeUrl = url.trim();
+    if (!safeUrl.startsWith('http://') && !safeUrl.startsWith('https://')) {
+      safeUrl = 'https://' + safeUrl;
+    }
+    try {
+      Linking.openURL(safeUrl).catch(() => {
+        Alert.alert('Error', 'No se pudo abrir el enlace.');
+      });
+    } catch {
+      Alert.alert('Error', 'Enlace inválido.');
     }
   };
 
+  const handleDelete = (evento: Evento, dateContext?: string) => {
+    const isRecurring = (evento.recurrence ?? 'none') !== 'none';
+
+    if (!isRecurring) {
+      // Non-recurring: simple confirmation
+      if (Platform.OS === 'web') {
+        if (window.confirm(`¿Eliminar "${evento.titulo}"?`)) deleteEvent(evento.id);
+      } else {
+        Alert.alert('Eliminar evento', `¿Eliminar "${evento.titulo}"?`, [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Eliminar', style: 'destructive', onPress: () => deleteEvent(evento.id) },
+        ]);
+      }
+      return;
+    }
+
+    // Recurring: 3-option alert
+    const exceptionDate = dateContext || selectedDate;
+    Alert.alert(
+      'Eliminar evento recurrente',
+      `"${evento.titulo}" se repite. ¿Qué deseas hacer?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Solo este día',
+          onPress: () => addExceptionDate(evento.id, exceptionDate),
+        },
+        {
+          text: 'Todos los futuros',
+          style: 'destructive',
+          onPress: () => deleteEvent(evento.id),
+        },
+      ]
+    );
+  };
+
   const handleDeleteFromModal = (evento: Evento) => {
-    // Same logic as handleDelete, but we ensure the modal stays open.
-    // Since deleteEvent updates the 'events' state, the modal list should auto-update.
-    handleDelete(evento);
+    handleDelete(evento, modalSelectedDate);
   };
 
   const handleSave = async () => {
     if (!titulo.trim()) return;
-    if (!esTodoDia) {
-      if (!isValidTime(horaInicio) || !isValidTime(horaFin)) {
-        Alert.alert('Hora inválida', 'Formato HH:MM (ej: 09:30)');
-        return;
-      }
-      if (horaInicio >= horaFin) {
-        Alert.alert('Rango inválido', 'Inicio debe ser anterior a fin');
-        return;
-      }
-    }
+
+    // The date is always the selectedDate (already chosen before opening modal)
+    const fechaStr = selectedDate;
+    const horaInicioStr = format(fechaInicio, 'HH:mm');
+    const horaFinStr = format(fechaFin, 'HH:mm');
+
     setSaving(true);
     if (editingEvent) {
       await updateEvent({
-        ...editingEvent,
+        id: editingEvent.id,
+        user_id: editingEvent.user_id,
+        fecha: fechaStr,
         titulo: titulo.trim(),
         descripcion: descripcion.trim(),
         es_todo_el_dia: esTodoDia,
-        hora_inicio: esTodoDia ? null : horaInicio,
-        hora_fin: esTodoDia ? null : horaFin,
+        hora_inicio: esTodoDia ? null : horaInicioStr,
+        hora_fin: esTodoDia ? null : horaFinStr,
+        video_url: videoUrl.trim() || null,
+        recurrence,
+        exception_dates: editingEvent.exception_dates ?? null,
       });
     } else {
       await addEvent({
         titulo: titulo.trim(),
         descripcion: descripcion.trim(),
-        fecha: selectedDate,
+        fecha: fechaStr,
         es_todo_el_dia: esTodoDia,
-        hora_inicio: esTodoDia ? null : horaInicio,
-        hora_fin: esTodoDia ? null : horaFin,
+        hora_inicio: esTodoDia ? null : horaInicioStr,
+        hora_fin: esTodoDia ? null : horaFinStr,
+        video_url: videoUrl.trim() || null,
+        recurrence,
       });
     }
     setSaving(false);
@@ -336,7 +475,7 @@ export default function CalendarScreen() {
   const dayEvents = useMemo(
     () =>
       events
-        .filter((e) => e.fecha === selectedDate)
+        .filter((e) => shouldShowOnDate(e, selectedDate))
         .sort((a, b) => {
           if (a.es_todo_el_dia && !b.es_todo_el_dia) return 1;
           if (!a.es_todo_el_dia && b.es_todo_el_dia) return -1;
@@ -347,7 +486,7 @@ export default function CalendarScreen() {
 
 
   const modalDateEvents = useMemo(
-    () => events.filter((e) => e.fecha === modalSelectedDate),
+    () => events.filter((e) => shouldShowOnDate(e, modalSelectedDate)),
     [events, modalSelectedDate]
   );
 
@@ -382,7 +521,7 @@ export default function CalendarScreen() {
             const dateStr = format(date, 'yyyy-MM-dd');
             const isSelected = dateStr === selectedDate;
             const isToday = isSameDay(date, new Date());
-            const hasEvent = markedDates[dateStr] !== undefined;
+            const hasEvent = events.some((evt) => shouldShowOnDate(evt, dateStr));
 
             return (
               <Pressable
@@ -456,6 +595,9 @@ export default function CalendarScreen() {
                 <View style={styles.eventInfo}>
                   <View style={styles.eventTitleRow}>
                     <Text style={styles.eventTitle}>{evento.titulo}</Text>
+                    {evento.recurrence && evento.recurrence !== 'none' && (
+                      <Text style={styles.recurrenceBadge}>🔄</Text>
+                    )}
                     {!evento.es_todo_el_dia && evento.hora_inicio && evento.hora_fin && (
                       <View style={styles.timeBadge}>
                         <Text style={styles.timeBadgeText}>
@@ -466,6 +608,11 @@ export default function CalendarScreen() {
                   </View>
                   {evento.es_todo_el_dia && <Text style={styles.allDayLabel}>Todo el día</Text>}
                   {evento.descripcion ? <Text style={styles.eventDesc}>{evento.descripcion}</Text> : null}
+                  {evento.video_url ? (
+                    <Pressable style={styles.joinButton} onPress={() => handleJoinVideo(evento.video_url)}>
+                      <Text style={styles.joinButtonText}>📹 Unirse</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
                 <View style={styles.eventActions}>
                   <Pressable style={styles.actionButton} onPress={() => handleEdit(evento)} hitSlop={8}>
@@ -543,10 +690,12 @@ export default function CalendarScreen() {
               <Text style={styles.modalTitle}>Selecciona fecha</Text>
               <View style={{ height: 16 }} />
               <Calendar
+                key={modalSelectedDate}
+                initialDate={modalSelectedDate}
                 markedDates={{
-                  ...markedDates,
+                  ...eventMarks,
                   [modalSelectedDate]: {
-                    ...markedDates[modalSelectedDate],
+                    ...eventMarks[modalSelectedDate],
                     selected: true,
                     selectedColor: COLORS.primary,
                     selectedTextColor: '#FFFFFF',
@@ -590,7 +739,7 @@ export default function CalendarScreen() {
                           <View style={[styles.miniEventDot, { backgroundColor: COLORS.primary }]} />
                           <Text style={styles.miniEventTitle} numberOfLines={1}>{evt.titulo}</Text>
                           <Text style={styles.miniEventTime}>
-                            {evt.es_todo_el_dia ? 'Todo el día' : evt.hora_inicio}
+                            {evt.es_todo_el_dia ? 'Todo el día' : (evt.hora_inicio ?? 'Sin hora')}
                           </Text>
                         </View>
                         <View style={styles.miniEventActions}>
@@ -630,7 +779,11 @@ export default function CalendarScreen() {
           <ScrollView contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled">
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>{editingEvent ? 'Editar Evento' : 'Nuevo Evento'}</Text>
-              <Text style={styles.modalDate}>{editingEvent ? editingEvent.fecha : selectedDate}</Text>
+              <Text style={styles.modalDate}>
+                {esTodoDia
+                  ? format(fechaInicio, 'dd/MM/yyyy')
+                  : `${format(fechaInicio, 'dd/MM/yyyy HH:mm')} – ${format(fechaFin, 'HH:mm')}`}
+              </Text>
 
               <Text style={styles.inputLabel}>Título</Text>
               <TextInput style={styles.input} placeholder="Ej: Reunión de equipo" placeholderTextColor={COLORS.textSecondary} value={titulo} onChangeText={setTitulo} autoFocus />
@@ -643,15 +796,52 @@ export default function CalendarScreen() {
                 <Switch value={esTodoDia} onValueChange={setEsTodoDia} trackColor={{ false: COLORS.border, true: COLORS.primaryLight }} thumbColor={esTodoDia ? COLORS.primary : '#F4F3F4'} />
               </View>
 
+              <Text style={styles.inputLabel}>Enlace de videollamada</Text>
+              <TextInput style={styles.input} placeholder="https://zoom.us/j/..." placeholderTextColor={COLORS.textSecondary} value={videoUrl} onChangeText={setVideoUrl} keyboardType="url" autoCapitalize="none" autoCorrect={false} />
+
+              <Text style={styles.inputLabel}>Repetir evento</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recurrenceScroll}>
+                <View style={styles.recurrenceRow}>
+                  {RECURRENCE_OPTIONS.map((opt) => (
+                    <Pressable
+                      key={opt.value}
+                      style={[styles.recurrenceChip, recurrence === opt.value && styles.recurrenceChipActive]}
+                      onPress={() => setRecurrence(opt.value)}
+                    >
+                      <Text style={[styles.recurrenceChipText, recurrence === opt.value && styles.recurrenceChipTextActive]}>
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </ScrollView>
+
               {!esTodoDia && (
-                <View style={styles.timeRow}>
-                  <View style={styles.timeField}>
-                    <Text style={styles.inputLabel}>Hora Inicio</Text>
-                    <TextInput style={styles.input} placeholder="09:00" placeholderTextColor={COLORS.textSecondary} value={horaInicio} onChangeText={setHoraInicio} keyboardType="numbers-and-punctuation" maxLength={5} />
+                /* ── Solo selectores de HORA ── */
+                <View style={styles.datePickerSection}>
+                  <View style={styles.datePickerRow}>
+                    <Text style={styles.datePickerLabel}>🟢 Desde</Text>
+                    <RNDateTimePicker
+                      value={fechaInicio}
+                      mode="time"
+                      display="compact"
+                      onChange={handleStartDateChange}
+                      locale="es-ES"
+                      accentColor={COLORS.primary}
+                    />
                   </View>
-                  <View style={styles.timeField}>
-                    <Text style={styles.inputLabel}>Hora Fin</Text>
-                    <TextInput style={styles.input} placeholder="10:00" placeholderTextColor={COLORS.textSecondary} value={horaFin} onChangeText={setHoraFin} keyboardType="numbers-and-punctuation" maxLength={5} />
+                  <View style={styles.datePickerDivider} />
+                  <View style={styles.datePickerRow}>
+                    <Text style={styles.datePickerLabel}>🔴 Hasta</Text>
+                    <RNDateTimePicker
+                      value={fechaFin}
+                      mode="time"
+                      display="compact"
+                      minimumDate={fechaInicio}
+                      onChange={handleEndDateChange}
+                      locale="es-ES"
+                      accentColor={COLORS.primary}
+                    />
                   </View>
                 </View>
               )}
@@ -906,6 +1096,31 @@ const styles = StyleSheet.create({
   timeRow: { flexDirection: 'row', gap: 12 },
   timeField: { flex: 1 },
 
+  // Date picker styles
+  datePickerSection: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  datePickerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  datePickerLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  datePickerDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 0,
+  },
+
   modalButtons: { flexDirection: 'row', gap: 12, marginTop: 4 },
   button: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   buttonCancel: { backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border },
@@ -976,5 +1191,26 @@ const styles = StyleSheet.create({
   miniActionText: {
     fontSize: 16,
     color: COLORS.primary,
-  }
+  },
+
+  // Recurrence chips
+  recurrenceScroll: { marginBottom: 16 },
+  recurrenceRow: { flexDirection: 'row', gap: 8 },
+  recurrenceChip: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+    backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border,
+  },
+  recurrenceChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  recurrenceChipText: { fontSize: 13, fontWeight: '600', color: COLORS.textSecondary },
+  recurrenceChipTextActive: { color: '#FFFFFF' },
+
+  // Video join button
+  joinButton: {
+    marginTop: 6, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 5,
+    borderRadius: 8, backgroundColor: '#E0F2FE',
+  },
+  joinButtonText: { fontSize: 13, fontWeight: '600', color: '#0284C7' },
+
+  // Recurrence badge on card
+  recurrenceBadge: { fontSize: 14 }
 });

@@ -95,6 +95,7 @@ export function useWellness(): UseWellnessReturn {
                 });
             } catch (err) {
                 const message = err instanceof Error ? err.message : 'Error al guardar wellness';
+                console.error('[Wellness upsertField]', message, err);
                 setError(message);
             }
         },
